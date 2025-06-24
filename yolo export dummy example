@@ -1,0 +1,8 @@
+from ultralytics import YOLO #, YOLOv10
+ 
+# # Load the finetuned YOLO11 model
+model = YOLO("train9/weights/best.pt")
+ 
+# # Export the model to ONNX format
+model.export(format="onnx", simplify=True, dynamic=True,
+             nms=True, opset=13, device="cuda:0")
