@@ -6,3 +6,94 @@ model = YOLO("train9/weights/best.pt")
 # # Export the model to ONNX format
 model.export(format="onnx", simplify=True, dynamic=True,
              nms=True, opset=13, device="cuda:0")
+
+
+# Ultralytics onnx inference
+
+import cv2
+import numpy as np
+import onnxruntime as ort
+import time
+ 
+# Load ONNX model
+model_path = "yolo11n.onnx"  # Path to your exported ONNX model
+session = ort.InferenceSession(model_path)
+ 
+# Get model details
+input_name = session.get_inputs()[0].name
+output_names = [output.name for output in session.get_outputs()]
+input_shape = session.get_inputs()[0].shape
+input_width, input_height = input_shape[2], input_shape[3]  # ONNX input size
+ 
+# Video file
+video_path = "/Users/saptarshimallikthakur/Desktop/tracking/Video Analytics/Test-Videos/IMG_0238_Trim.mp4"
+cap = cv2.VideoCapture(video_path)
+ 
+# YOLO-specific preprocessing function
+def preprocess_image(img, input_size):
+    img_height, img_width = img.shape[:2]
+    r = min(input_size[0]/img_width, input_size[1]/img_height)
+    new_width, new_height = int(img_width * r), int(img_height * r)
+    resized = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+    canvas = np.zeros((input_size[1], input_size[0], 3), dtype=np.uint8)
+    canvas[:new_height, :new_width, :] = resized
+    canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    blob = np.transpose(canvas, (2, 0, 1))[np.newaxis, ...]
+    return blob, r, (img_width, img_height)
+ 
+# Process YOLOv11 output with NMS
+def process_output(outputs, conf_threshold=0.2, nms_threshold=0.45, img_shape=None, ratio=1.0):
+    output = outputs[0][0]
+    boxes, confidences = [], []
+ 
+    for idx in range(output.shape[1]):
+        confidence = output[4, idx]
+        if confidence >= conf_threshold:
+            x, y, w, h = output[:4, idx]
+            x1 = int((x - w / 2) / ratio)
+            y1 = int((y - h / 2) / ratio)
+            width, height = int(w / ratio), int(h / ratio)
+ 
+            boxes.append([x1, y1, width, height])
+            confidences.append(float(confidence))
+ 
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, nms_threshold)
+    detections = []
+ 
+    if len(indices) > 0:
+        for i in indices.flatten():
+            x, y, w, h = boxes[i]
+            detections.append({
+                'box': [x, y, x + w, y + h],
+                'confidence': confidences[i]
+            })
+ 
+    return detections
+ 
+# Main detection loop
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+ 
+    start_time = time.time()
+    blob, ratio, orig_shape = preprocess_image(frame, (input_width, input_height))
+    outputs = session.run(output_names, {input_name: blob})
+ 
+    detections = process_output(outputs, conf_threshold=0.25, nms_threshold=0.45, img_shape=orig_shape, ratio=ratio)
+ 
+    for det in detections:
+        x1, y1, x2, y2 = det['box']
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        label = f"{det['confidence']:.2f}"
+        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+ 
+    fps_text = f"FPS: {1.0/(time.time() - start_time):.2f}"
+    cv2.putText(frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+ 
+    cv2.imshow('People Detection with NMS', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+ 
+cap.release()
+cv2.destroyAllWindows()
